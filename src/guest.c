@@ -48,8 +48,41 @@ int main() {
     corevm_audio_mode(&audio_mode);
     #endif
     doomgeneric_Create(4, ARGV);
+    uint32t tick_nb = 0; 
+    uint32t next_tick = 0;
+    uint32t next_ops = 0; //start tick 0
     while (1) {
+        // TODO make this data feed mode optional somehow (likely with pragma)
+        while(next_tick == tick_nb) {
+            // ignore start (procs directly after read), ignore suspend 01: will suspend on empty queue next
+
+            // consume key pressed / key released
+            if (next_ops >> 30 == 10) {
+                // pressed
+                uint32t key = next_ops & (UINT32_MAX >> 2); 
+                ext_on_keychange((unsigned char) key, 1);
+            }
+
+            else if (next_ops >> 30 == 11) {
+                // released 
+                uint32t key = next_ops & (UINT32_MAX >> 2); 
+                ext_on_keychange((unsigned char) key, 0);
+            }
+
+            // TODO note that noops recording need a dummy suspend at the end to process last tick even
+            // on termination
+            uint64t data = corevm_queue_read_one();
+        
+            next_tick = (uint32t) (data >> 32);
+            next_ops = (uint32t) data;
+
+            // start reset tick nb here (so we can suspend at tick n then restart
+            if (next_ops >> 30 == 00) {
+                tick_nb = next_ops
+            }
+        }
         doomgeneric_Tick();
+        tick_nb += 1; // TODO is c still wrapping add?
     }
     return 0;
 }
@@ -176,8 +209,40 @@ Uint32 SDL_GetTicks(void) {
     return DG_GetTicksMs();
 }
 
+static unsigned char _KEYS[256] = {};
+
+#define KEYQUEUE_SIZE 32
+static unsigned short s_KeyQueue[KEYQUEUE_SIZE];
+static unsigned int s_KeyQueueWriteIndex = 0;
+static unsigned int s_KeyQueueReadIndex = 0;
+
+void ext_on_keychange(unsigned char key, unsigned char is_pressed) {
+    unsigned char was_pressed = _KEYS[key];
+    if (is_pressed == was_pressed) {
+        return;
+    }
+
+    _KEYS[key] = is_pressed;
+
+    unsigned short key_data = (is_pressed << 8) | key;
+    s_KeyQueue[s_KeyQueueWriteIndex] = key_data;
+    s_KeyQueueWriteIndex++;
+    s_KeyQueueWriteIndex %= KEYQUEUE_SIZE;
+}
+
 int DG_GetKey(int * is_pressed, unsigned char * key) {
-    return 0;
+    if (s_KeyQueueReadIndex == s_KeyQueueWriteIndex) {
+        return 0;
+    }
+
+    unsigned short key_data = s_KeyQueue[s_KeyQueueReadIndex];
+    s_KeyQueueReadIndex++;
+    s_KeyQueueReadIndex %= KEYQUEUE_SIZE;
+
+    *is_pressed = key_data >> 8;
+    *key = key_data & 0xFF;
+
+    return 1;
 }
 
 void DG_SetWindowTitle(const char * title) {}
